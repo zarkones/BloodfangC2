@@ -14,6 +14,81 @@ extern "C" auto declfn entry(_In_ void *args) -> void {
 
 #include <cstdint>
 
+size_t strlen(const char* str) {
+    size_t length = 0;
+    while (*str != '\0') {
+        length++;
+        str++;
+    }
+    return length;
+}
+
+class Term {
+public:
+    Term(uintptr_t ntdll_handle, uintptr_t kernel32_handle, uintptr_t user32_handle);
+    char* run(char* command);
+private:
+    uintptr_t ntdll_handle, kernel32_handle, user32_handle;
+};
+
+Term::Term(uintptr_t ntdll_handle, uintptr_t kernel32_handle, uintptr_t user32_handle) {
+    this->ntdll_handle = ntdll_handle;
+    this->kernel32_handle = kernel32_handle;
+    this->user32_handle = user32_handle;
+}
+
+char* Term::run(char* command) {
+    decltype(WaitForSingleObject) *wait_for_single_object = RESOLVE_API(this->kernel32_handle, WaitForSingleObject);
+    decltype(CreatePipe) *create_pipe = RESOLVE_API(this->kernel32_handle, CreatePipe);
+    decltype(GetStdHandle) *get_std_handle = RESOLVE_API(this->kernel32_handle, GetStdHandle);
+    decltype(GetProcessHeap) *get_process_heap = RESOLVE_API(this->kernel32_handle, GetProcessHeap);
+    decltype(CreateProcess) *create_process = RESOLVE_API(this->kernel32_handle, CreateProcess);
+    decltype(CloseHandle) *close_handle = RESOLVE_API(this->kernel32_handle, CloseHandle);
+    decltype(RtlAllocateHeap) *rtl_alloc_heap = RESOLVE_API(this->ntdll_handle, RtlAllocateHeap);
+    decltype(wsprintfA) *_wsprintf = RESOLVE_API(this->user32_handle, wsprintfA);
+
+    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+    HANDLE read, write;
+    if (!create_pipe(&read, &write, &sa, 0)) {
+        return NULL;
+    }
+
+    STARTUPINFO si = {0};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = get_std_handle(STD_INPUT_HANDLE);
+    si.hStdOutput = write;
+    si.hStdError = write;
+
+    PROCESS_INFORMATION pi = {0};
+
+    HANDLE heap = get_process_heap();
+    if (heap == NULL) {
+        return NULL;
+    }
+
+    char* command_prefix = "cmd.exe /c ";
+
+    char* command_buffer = (char*)rtl_alloc_heap(heap, 0, strlen(command_prefix) + strlen(command) + 1);
+
+    int chars_written_command_buffer = _wsprintf(command_buffer, "%s%s", command_prefix, command);
+
+    if (!create_process(NULL, const_cast<char*>(command_buffer), NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+        close_handle(read);
+        close_handle(write);
+        return NULL;
+    }
+
+    close_handle(write);
+
+    wait_for_single_object(pi.hProcess, INFINITE);
+
+    close_handle(pi.hProcess);
+    close_handle(pi.hThread);
+
+    // TODO: Getting late, tomorrow's problem...
+}
+
 class Machine {
 public:
     uint32_t id;
