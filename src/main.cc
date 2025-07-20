@@ -68,9 +68,9 @@ char* Term::run(char* command) {
     STARTUPINFO si = {0};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = get_std_handle(STD_INPUT_HANDLE); // Consider if you want to redirect stdin as well
+    si.hStdInput = get_std_handle(STD_INPUT_HANDLE);
     si.hStdOutput = write;
-    si.hStdError = write; // Redirect stderr to the same pipe
+    si.hStdError = write;
 
     PROCESS_INFORMATION pi = {0};
 
@@ -81,9 +81,7 @@ char* Term::run(char* command) {
         return "e:get_process_heap";
     }
 
-    // You might want to build the command more robustly, e.g., if 'command' itself contains spaces
-    // For simplicity, keeping your original command construction.
-    char* command_prefix = "cmd.exe /C "; // Added space after /C to properly separate command
+    char* command_prefix = "cmd.exe /C ";
     size_t command_prefix_len = strlen(command_prefix);
     size_t command_len = strlen(command);
 
@@ -95,7 +93,6 @@ char* Term::run(char* command) {
     }
     _wsprintf(command_buffer, "%s%s", command_prefix, command);
 
-    // Set bInheritHandles to TRUE so the child process inherits the pipe handles
     if (!create_process(NULL, command_buffer, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
         rtl_free_heap(heap, 0, command_buffer);
         close_handle(read);
@@ -103,20 +100,13 @@ char* Term::run(char* command) {
         return "e:create_process";
     }
 
-    // IMPORTANT: Close the write handle in the parent process immediately after CreateProcess.
-    // The child process has inherited its own copy. If the parent keeps it open,
-    // ReadFile will never return EOF until the parent also closes it.
     close_handle(write);
 
-    // Wait for the child process to finish.
-    // This is important before assuming all output has been written.
     wait_for_single_object(pi.hProcess, INFINITE);
 
-    // Close process and thread handles
     close_handle(pi.hProcess);
     close_handle(pi.hThread);
 
-    // Free the command_buffer
     rtl_free_heap(heap, 0, command_buffer);
 
     size_t initial_capacity = 4096;
@@ -131,13 +121,12 @@ char* Term::run(char* command) {
     DWORD bytes_read;
 
     while (true) {
-        // Ensure there's space for at least one byte + null terminator
-        if (current_size + 1 >= capacity) { // +1 for null terminator
+        if (current_size + 1 >= capacity) {
             size_t new_capacity = capacity * 2;
-            if (new_capacity < capacity) { // Check for overflow
+            if (new_capacity < capacity) {
                 rtl_free_heap(heap, 0, buffer);
                 close_handle(read);
-                return "e:capacity_overflow"; // Or handle this more gracefully
+                return "e:capacity_overflow";
             }
             char* new_buffer = (char*)rtl_alloc_heap(heap, 0, new_capacity);
             if (new_buffer == NULL) {
@@ -146,45 +135,37 @@ char* Term::run(char* command) {
                 return "e:rtl_alloc_heap2";
             }
 
-            // RtlCopyMemory is safer for memory operations than plain memcpy
-            // if available or a custom implementation that handles overlapping.
             my_copy_memory(new_buffer, buffer, current_size);
             rtl_free_heap(heap, 0, buffer);
             buffer = new_buffer;
             capacity = new_capacity;
         }
 
-        DWORD to_read = (DWORD)(capacity - current_size -1); // Leave space for null terminator
-        if (to_read == 0) { // Should not happen with the capacity check above, but as a safeguard
+        DWORD to_read = (DWORD)(capacity - current_size -1);
+        if (to_read == 0) {
              break;
         }
 
         if (!read_file(read, buffer + current_size, to_read, &bytes_read, NULL)) {
             DWORD last_error = get_last_error();
-            // ERROR_BROKEN_PIPE (109) indicates the pipe has been closed by the writer,
-            // and there's no more data. This is a normal way to exit the read loop.
             if (last_error == ERROR_BROKEN_PIPE || last_error == ERROR_NO_DATA) {
-                break; // End of pipe, no more data
+                break;
             } else {
-                // Actual error during ReadFile
                 char error_msg[256];
                 _wsprintf(error_msg, "e:read_file_error_%d", last_error);
                 rtl_free_heap(heap, 0, buffer);
                 close_handle(read);
-                return (char*)rtl_alloc_heap(heap, 0, strlen(error_msg) + 1); // Allocate on heap for return
+                return (char*)rtl_alloc_heap(heap, 0, strlen(error_msg) + 1);
             }
         }
         if (bytes_read == 0) {
-            // ReadFile can return TRUE with bytes_read == 0 if it reaches EOF.
             break;
         }
         current_size += bytes_read;
     }
 
-    buffer[current_size] = '\0'; // Null-terminate the buffer
+    buffer[current_size] = '\0';
     close_handle(read);
-
-    // Return the dynamically allocated buffer
     return buffer;
 }
 
