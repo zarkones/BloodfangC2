@@ -3,3 +3,7 @@ Bloodfang is a modern implant with position independent code that compiles to 64
 Props to: https://5pider.net/blog/2024/01/27/modern-shellcode-implant-design
 
 That said; Bloodfang is work in progress and is missing a lot of features a part from stealthy execution.
+
+Checkout my other C2s, as I probably am gonna integrate Bloodfang agent into one of them, btw they both have dark-themed elegant user interfaces:
+https://github.com/zarkones/OnionC2 - Tor powered C2 made in Rust & Go
+https://github.com/zarkones/XENA - Innovative C2 made 100% in Go
